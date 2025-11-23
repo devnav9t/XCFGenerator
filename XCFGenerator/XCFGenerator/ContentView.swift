@@ -274,36 +274,137 @@ struct ContentView: View {
         }
     }
     
+    func schemePaths(for basePath: String, for fm: FileManager) -> [String] {
+        var paths: [String] = []
+
+        // Shared schemes
+        let shared = "\(basePath)/xcshareddata/xcschemes"
+        if fm.fileExists(atPath: shared) {
+            paths.append(shared)
+        }
+
+        // User schemes (optional)
+        let xcuserdata = "\(basePath)/xcuserdata"
+        if fm.fileExists(atPath: xcuserdata),
+           let users = try? fm.contentsOfDirectory(atPath: xcuserdata) {
+            for user in users where user.hasSuffix(".xcuserdatad") {
+                let userSchemes = "\(xcuserdata)/\(user)/xcschemes"
+                if fm.fileExists(atPath: userSchemes) {
+                    paths.append(userSchemes)
+                }
+            }
+        }
+        
+        return paths
+    }
+    
+    private func runCommandCaptureStdout(_ command: String) -> String? {
+        let process = Process()
+        let outputPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = Pipe()
+        process.launchPath = "/bin/bash"
+        process.arguments = ["-c", command]
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return nil
+        }
+        let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        guard process.terminationStatus == 0 else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+    
+    private func xcodebuildSchemes(in containerPath: String) -> [String] {
+        // Determine whether this is a workspace or project
+        let isWorkspace = containerPath.hasSuffix(".xcworkspace")
+        let baseName = (containerPath as NSString).lastPathComponent
+        let dirPath = (containerPath as NSString).deletingLastPathComponent
+
+        // Build the command to run inside the directory so relative path works
+        let flag = isWorkspace ? "-workspace" : "-project"
+        let command = "cd \"\(dirPath)\" && xcodebuild -list -json \(flag) \"\(baseName)\""
+
+        guard let jsonString = runCommandCaptureStdout(command),
+              let data = jsonString.data(using: .utf8) else { return [] }
+
+        // Parse JSON for scheme names
+        do {
+            let obj = try JSONSerialization.jsonObject(with: data, options: [])
+            if let dict = obj as? [String: Any] {
+                // Newer xcodebuild JSON sometimes nests under "workspace" or "project"
+                if let workspace = dict["workspace"] as? [String: Any],
+                   let schemes = workspace["schemes"] as? [String] {
+                    return schemes
+                }
+                if let project = dict["project"] as? [String: Any],
+                   let schemes = project["schemes"] as? [String] {
+                    return schemes
+                }
+                // Older format: top-level "schemes"
+                if let schemes = dict["schemes"] as? [String] {
+                    return schemes
+                }
+            }
+        } catch {
+            return []
+        }
+
+        return []
+    }
+
+    func findSchemes(in container: String, for fm: FileManager) throws -> [String] {
+        return try schemePaths(for: container, for: fm)
+            .flatMap { try fm.contentsOfDirectory(atPath: $0) }
+            .filter { $0.hasSuffix(".xcscheme") }
+            .map { String($0.dropLast(9)) }
+    }
+    
     func detectScheme() {
         detectedScheme = ""
-        
+
         let fileManager = FileManager.default
-        
+
         do {
             let contents = try fileManager.contentsOfDirectory(atPath: selectedFolderPath)
-            
-            guard let xcodeprojFile = contents.first(where: { $0.hasSuffix(".xcodeproj") }) else {
-                showError("No .xcodeproj file found in the selected folder")
+
+            // Collect all possible containers (.xcworkspace and .xcodeproj)
+            let workspaces = contents.filter { $0.hasSuffix(".xcworkspace") }
+            let projects = contents.filter { $0.hasSuffix(".xcodeproj") }
+            let containers = workspaces + projects
+
+            var allSchemes: [String] = []
+
+            for container in containers {
+                let containerPath = "\(selectedFolderPath)/\(container)"
+                let schemes = (try? findSchemes(in: containerPath, for: fileManager)) ?? []
+                if !schemes.isEmpty {
+                    allSchemes.append(contentsOf: schemes)
+                }
+            }
+
+            if allSchemes.isEmpty {
+                // Fallback: Ask xcodebuild for schemes (works even when schemes aren't shared on disk)
+                var discovered: [String] = []
+                for container in containers {
+                    let containerPath = "\(selectedFolderPath)/\(container)"
+                    let names = xcodebuildSchemes(in: containerPath)
+                    if !names.isEmpty { discovered.append(contentsOf: names) }
+                }
+                allSchemes = discovered
+            }
+
+            guard !allSchemes.isEmpty else {
+                showError("No schemes found. Ensure you selected the folder containing your .xcworkspace/.xcodeproj and that the scheme is saved (Shared or user scheme). You can also open Xcode > Product > Scheme > Manage Schemes and verify.")
                 return
             }
-            
-            let xcodeprojPath = "\(selectedFolderPath)/\(xcodeprojFile)"
-            let schemesPath = "\(xcodeprojPath)/xcshareddata/xcschemes"
-            
-            if fileManager.fileExists(atPath: schemesPath) {
-                let schemes = try fileManager.contentsOfDirectory(atPath: schemesPath)
-                    .filter{ $0.hasSuffix(".xcscheme") }
-                    .map { String($0.dropLast(9)) }
-                
-                if let mainScheme = schemes.first(where: { !$0.lowercased().contains("test")} ) {
-                    detectedScheme = mainScheme
-                } else if let fallback = schemes.first {
-                    detectedScheme = fallback
-                } else {
-                    showError("No schemes found in the project")
-                }
+
+            // Prefer non-test scheme
+            if let main = allSchemes.first(where: { !$0.lowercased().contains("test") }) {
+                detectedScheme = main
             } else {
-                showError("No shared schemes found. Please ensure your scheme is shared in Xcode")
+                detectedScheme = allSchemes.first ?? ""
             }
         } catch {
             showError("Error accessing project: \(error.localizedDescription)")

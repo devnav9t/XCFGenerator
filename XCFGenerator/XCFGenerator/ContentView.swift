@@ -25,13 +25,21 @@ struct ContentView: View {
     
     var body: some View {
         VStack(spacing: 20) {
-            Text("XCFramework Generator")
-                .font(.largeTitle)
-                .fontWeight(.bold)
-                .padding(.top)
+            HStack {
+                Image("Icon")
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 44, height: 44)
+                    .clipShape(.rect(cornerRadius: 8))
+
+                Text("XCFramework Generator")
+                    .font(.largeTitle)
+                    .fontWeight(.bold)
+            }
+            .padding(.top)
             
             // Folder Selection Section
-            GroupBox(label: Text("Project Folder").font(.headline)) {
+            GroupBox(/*label: Text("Project Folder").font(.headline)*/) {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
                         Text(selectedFolderPath.isEmpty ? "No folder selected" : selectedFolderPath)
@@ -41,7 +49,7 @@ struct ContentView: View {
                         
                         Spacer()
                         
-                        Button("Select Folder") {
+                        Button("SELECT YOUR PROJECT FOLDER") {
                             selectFolder()
                         }
                         .buttonStyle(.borderedProminent)
@@ -67,7 +75,7 @@ struct ContentView: View {
                         
                         Spacer()
                         
-                        Button("Select Output Folder") {
+                        Button("SELECT OUTPUT FOLDER") {
                             selectOutputFolder()
                         }
                         .buttonStyle(.borderedProminent)
@@ -92,6 +100,7 @@ struct ContentView: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(selectedFolderPath.isEmpty || detectedScheme.isEmpty || outputFolderPath.isEmpty || isBuilding)
+            .padding([.horizontal], 100)
             
             // Output Section
             GroupBox(label: Text("Build Output").font(.headline)) {
@@ -125,13 +134,14 @@ struct ContentView: View {
         } message: {
             Text(alertMessage)
         }
-        .alert("Build Successful", isPresented: $showSuccessAlert) {
+        .alert("Build Successful ✅", isPresented: $showSuccessAlert) {
             Button("Show in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: lastXCFrameworkPath)])
             }
             Button("OK", role: .cancel) {}
         } message: {
             Text("XCFramework was created successfully at:\n\(lastXCFrameworkPath)")
+                .foregroundStyle(.green)
         }
         .alert("XCFramework Already Exists", isPresented: $showOverwriteAlert) {
             Button("Cancel") {
@@ -282,9 +292,13 @@ struct ContentView: View {
             
             if fileManager.fileExists(atPath: schemesPath) {
                 let schemes = try fileManager.contentsOfDirectory(atPath: schemesPath)
+                    .filter{ $0.hasSuffix(".xcscheme") }
+                    .map { String($0.dropLast(9)) }
                 
-                if let firstScheme = schemes.first(where: { $0.hasSuffix(".xcscheme") }) {
-                    detectedScheme = String(firstScheme.dropLast(9)) // Remove .xcscheme extension
+                if let mainScheme = schemes.first(where: { !$0.lowercased().contains("test")} ) {
+                    detectedScheme = mainScheme
+                } else if let fallback = schemes.first {
+                    detectedScheme = fallback
                 } else {
                     showError("No schemes found in the project")
                 }
